@@ -1,0 +1,82 @@
+// prisma/schema.prisma — whatsbot-v1 (public client)
+//
+// Local persistence models only. Control-plane models (Client, ClientCredential,
+// BotConfig, BotEvent, Heartbeat) live in the private control-plane repo.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  phone     String   @unique
+  name      String?
+  premium   Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model Group {
+  id             String   @id // remoteJid
+  name           String?
+  antiTag        Boolean  @default(false)
+  antiLink       Boolean  @default(false)
+  antiSpam       Boolean  @default(false)
+  antiWord       Boolean  @default(false)
+  badWords       String[] @default([])
+  welcomeEnabled Boolean  @default(false)
+  welcomeMsg     String?
+  goodbyeMsg     String?
+  warnLimit      Int?
+  warnCounts     Json     @default("{}")
+  createdAt      DateTime @default(now())
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  phone     String   // Bot's identifier/owner number
+  key       String   // Filename (e.g., "creds.json")
+  value     String   // Stringified JSON content
+  updatedAt DateTime @updatedAt
+
+  @@unique([phone, key])
+}
+
+// Incoming message log — used by Privacy Mode (read_at tracking)
+model Message {
+  id          String    @id @default(cuid())
+  remoteJid   String
+  messageId   String
+  senderJid   String?
+  msgType     String?
+  content     String?
+  participant String? // group messages carry participant in the message key
+  fromMe      Boolean   @default(false)
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  readAt      DateTime?
+  repliedAt   DateTime?
+
+  @@unique([remoteJid, messageId])
+}
+
+// Single-row key/value settings (e.g. privacy mode)
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value Json
+}
+
+// Outbound audit trail (source: chatbot | welcome | command)
+model OutboundMessage {
+  id        String   @id @default(cuid())
+  messageId String?
+  remoteJid String
+  source    String?
+  status    String? // sent | failed | blocked
+  createdAt DateTime @default(now())
+}
