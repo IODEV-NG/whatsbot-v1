@@ -20,6 +20,8 @@ import { restoreSessionFromDb, backupFileToDb, deleteFileFromDb } from './lib/se
 import { groupService } from './lib/services.js'
 import { formatNumber, react, getMessageText } from './lib/utils.js'
 import { isKillSwitchOn, auditOutbound } from './lib/abuse.js'
+import { gateOutbound } from './lib/outbound.js'
+import { startHealthServer } from './lib/health.js'
 import {
   isRemoteClient,
   remoteRegister,
@@ -27,6 +29,10 @@ import {
   remoteHeartbeat,
   applyRemoteBotConfig,
   initRemoteTransports,
+  remotePollCommands,
+  remoteAckCommand,
+  executeRemoteCommand,
+  setSyncStatusProvider,
 } from './lib/remote.js'
 
 // Reconnect backoff (1s → 2s → 4s → ... capped at 60s)
@@ -73,6 +79,12 @@ async function startBot() {
     browser: ['Ubuntu', 'Chrome', '20.0.04'],
     markOnlineOnConnect: true,
   })
+
+  // ─── Local health endpoint (§26) — reports status/version/connection state ─
+  startHealthServer(() => ({
+    whatsapp: sock.user ? 'connected' : 'connecting',
+    controlPlane: isRemoteClient ? 'connected' : 'local',
+  }))
 
   // ─── Remote client mode: register with the control plane ─────────────────
   if (isRemoteClient) {
@@ -197,14 +209,14 @@ async function startBot() {
 
       if (isKillSwitchOn()) return // global outbound pause
 
-      if (action === 'add' && group.welcomeMsg) {
+      if (action === 'add' && group.welcomeMsg && gateOutbound(id, 'welcome')) {
         try {
           await sock.sendMessage(id, { text: group.welcomeMsg, mentions: participants })
           await auditOutbound({ remoteJid: id, source: 'welcome', status: 'sent' })
         } catch {
           await auditOutbound({ remoteJid: id, source: 'welcome', status: 'failed' })
         }
-      } else if (action === 'remove' && group.goodbyeMsg) {
+      } else if (action === 'remove' && group.goodbyeMsg && gateOutbound(id, 'welcome')) {
         try {
           await sock.sendMessage(id, { text: group.goodbyeMsg, mentions: participants })
           await auditOutbound({ remoteJid: id, source: 'welcome', status: 'sent' })
@@ -264,6 +276,12 @@ async function initRemoteClient(sock) {
     process.exit(1)
   }
 
+  // Lets the SYNC_STATUS command report live WhatsApp connection state
+  setSyncStatusProvider(() => ({
+    whatsapp: sock.user ? 'connected' : 'connecting',
+    botStatus: 'running',
+  }))
+
   const beat = async () => {
     await remoteHeartbeat(
       sock.user ? 'connected' : 'connecting',
@@ -275,6 +293,14 @@ async function initRemoteClient(sock) {
   const poll = async () => {
     const cfg = await remoteFetchConfig().catch(() => null)
     if (cfg) applyRemoteBotConfig(cfg)
+
+    // Controlled command channel (§15) — whitelisted commands only
+    const commands = await remotePollCommands().catch(() => [])
+    for (const command of commands) {
+      const outcome = await executeRemoteCommand(command)
+      await remoteAckCommand(command.id, outcome.ok === true, outcome).catch(() => {})
+      logger.info(`[Remote] command ${command.type} → ${outcome.ok ? 'ok' : outcome.handled ? 'failed' : 'rejected'}`)
+    }
   }
 
   await beat()

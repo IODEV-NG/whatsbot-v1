@@ -85,6 +85,35 @@ whatsbot-v1/
 └── prisma/               # Local persistence schema + migrations
 ```
 
+## Docker
+
+```bash
+cp .env.example .env   # set OWNER_NUMBER (+ optional SESSION_ID/SECRET/CONTROL_URL)
+docker compose up -d   # starts postgres + bot; migrations run on boot
+curl http://localhost:3000/health
+```
+
+- The bot keeps its WhatsApp auth state in the `session` volume — wipe it and restart to re-pair.
+- For VPS / other hosts: `docker build -t whatsbot-v1 . && docker run --env-file .env whatsbot-v1`
+
+## Outbound safety
+
+Every automated outbound message (chatbot replies, welcome/goodbye, `/api/send`) passes through a single **outbound gate** — kill switch → outbound pause → windowed rate limiter (`RATE_MSG_PER_MIN/HOUR/DAY`, `RATE_NEW_RECIPIENTS_PER_DAY`). Blocked sends are recorded with `status: blocked` in the audit trail.
+
+## Remote command channel
+
+In remote-client mode the control plane can send whitelisted commands, polled every 30s alongside config:
+
+| Command | Effect |
+|---|---|
+| `RELOAD_CONFIG` | Re-fetch and apply remote config |
+| `PAUSE_OUTBOUND` / `RESUME_OUTBOUND` | Transient outbound pause (independent of the kill switch) |
+| `RESTART_BOT` | Graceful restart (supervisor brings it back) |
+| `REQUEST_DIAGNOSTICS` | Returns version/platform/uptime |
+| `SYNC_STATUS` | Reports live WhatsApp connection state |
+
+There is **no generic `execute()`** — unknown command types are rejected and acked as failed. Arbitrary shell/remote-code execution is impossible by design.
+
 ## Testing
 
 ```bash

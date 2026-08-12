@@ -15,6 +15,7 @@ import { userService, groupService, securityService, isGroupAdmin } from './lib/
 import { getPrivacySettings } from './lib/privacy.js'
 import { recordMessage } from './lib/messageService.js'
 import { isKillSwitchOn, auditOutbound } from './lib/abuse.js'
+import { gateOutbound } from './lib/outbound.js'
 import { getRuntimeFlag } from './lib/runtime.js'
 
 // ─── Pipeline stages ───────────────────────────────────────────────────────────
@@ -173,7 +174,9 @@ async function commandStage(ctx, next) {
       const canReply = autoReply &&
         !isKillSwitchOn() &&
         !ctx.privacy?.pauseAutoReply
-      if (canReply) {
+      // Centralized outbound gate (§17) — chatbot replies share the same
+      // kill-switch / rate-limiter budget as every other automated send.
+      if (canReply && gateOutbound(from, 'chatbot')) {
         await sock.sendMessage(from, { text: autoReply }).catch(() => {})
         await auditOutbound({ remoteJid: from, source: 'chatbot', status: 'sent' }).catch(() => {})
       }

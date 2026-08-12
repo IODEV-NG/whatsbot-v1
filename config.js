@@ -46,6 +46,10 @@ const config = {
   sessionSecret: env.SESSION_SECRET || '',
   controlUrl: env.CONTROL_URL || 'http://127.0.0.1:3000',
 
+  // ─── Local health endpoint (§26) ──────────────────────────────────────────
+  apiPort: toInt(env.API_PORT, 3000),
+  apiHost: env.API_HOST || '127.0.0.1', // bind to loopback by default (LAN-safe)
+
   // Optional: forward incoming messages to a webhook as JSON
   webhookUrl: env.WEBHOOK_URL || '',
 

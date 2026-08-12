@@ -1,0 +1,55 @@
+# ─── WhatsBot V1 public client — Docker Compose ────────────────────────────────
+#
+# Brings up the bot + its own PostgreSQL. Copy .env.example → .env first and set
+# OWNER_NUMBER + DATABASE_URL, or override the DATABASE_URL below.
+#
+#   docker compose up -d
+#   docker compose logs -f bot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: whatsbot
+      POSTGRES_PASSWORD: whatsbot
+      POSTGRES_DB: whatsbot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U whatsbot']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://whatsbot:whatsbot@postgres:5432/whatsbot
+      # ── Required ──────────────────────────────────────────────────────
+      OWNER_NUMBER: ${OWNER_NUMBER:-}
+      # ── Remote client mode (optional) ─────────────────────────────────
+      # SESSION_ID: ${SESSION_ID:-}
+      # SESSION_SECRET: ${SESSION_SECRET:-}
+      # CONTROL_URL: ${CONTROL_URL:-}
+      # ── Behavior ─────────────────────────────────────────────────────
+      PREFIX: ${PREFIX:-.}
+      BOT_NAME: ${BOT_NAME:-WhatsBot V1}
+      AUTO_READ: ${AUTO_READ:-false}
+      PRIVACY_MODE: ${PRIVACY_MODE:-false}
+      KILL_SWITCH: ${KILL_SWITCH:-false}
+      RATE_MSG_PER_MIN: ${RATE_MSG_PER_MIN:-20}
+      RATE_MSG_PER_HOUR: ${RATE_MSG_PER_HOUR:-200}
+      RATE_MSG_PER_DAY: ${RATE_MSG_PER_DAY:-500}
+    ports:
+      - '3000:3000' # /health endpoint
+    volumes:
+      - session:/app/session
+
+volumes:
+  pgdata:
+  session:
